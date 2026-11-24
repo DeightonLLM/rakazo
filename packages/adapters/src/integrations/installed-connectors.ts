@@ -121,11 +121,15 @@ const ApiOperationSchema = z.object({
   headerParameters: z.array(ModelHeaderName).default([]),
 });
 
-const ApiConfigSchema = z.object({
+export const ApiConfigSchema = z.object({
   auth: AuthSchema,
   headers: PublicHeadersSchema,
   operations: z.array(ApiOperationSchema).min(1).max(100),
 });
+
+/** The stored shape of an installed API connector: what the operations are, and how the
+ * credential is presented. The credential itself is never part of it. */
+export type ApiConfig = z.infer<typeof ApiConfigSchema>;
 
 type ApiOperation = z.infer<typeof ApiOperationSchema>;
 type InstalledRow = {

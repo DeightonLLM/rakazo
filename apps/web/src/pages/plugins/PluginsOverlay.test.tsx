@@ -13,7 +13,14 @@ const api = vi.hoisted(() => ({
     list: vi.fn(),
     tools: vi.fn(),
   },
-  capabilities: { list: vi.fn(), catalogSearch: vi.fn(), sourcePresets: vi.fn() },
+  capabilities: {
+    list: vi.fn(),
+    catalogSearch: vi.fn(),
+    sourcePresets: vi.fn(),
+    apiPresets: vi.fn(),
+    install: vi.fn(),
+    installApiPreset: vi.fn(),
+  },
   mcp: { servers: { list: vi.fn() }, assignments: { list: vi.fn() } },
   marketplace: { catalog: vi.fn() },
 }));
@@ -54,7 +61,6 @@ vi.mock("@rakazo/ui-web", async () => {
       "Disclosure",
       "DropdownMenu",
       "DropdownMenuContent",
-      "DropdownMenuItem",
       "DropdownMenuSeparator",
       "DropdownMenuTrigger",
       "Field",
@@ -84,6 +90,12 @@ vi.mock("@rakazo/ui-web", async () => {
           { type: type ?? "button", onClick, disabled, "aria-label": label },
           children,
         ),
+    ],
+    [
+      // A menu entry is a button here, so a test can pick one.
+      "DropdownMenuItem",
+      ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) =>
+        createElement("button", { type: "button", onClick }, children),
     ],
     [
       "Input",
@@ -117,6 +129,9 @@ beforeEach(() => {
   api.connections.tools.mockReset().mockResolvedValue([]);
   api.capabilities.list.mockReset().mockResolvedValue([]);
   api.capabilities.sourcePresets.mockReset().mockResolvedValue([]);
+  api.capabilities.apiPresets.mockReset().mockResolvedValue([]);
+  api.capabilities.install.mockReset().mockResolvedValue({});
+  api.capabilities.installApiPreset.mockReset().mockResolvedValue({});
   api.capabilities.catalogSearch
     .mockReset()
     .mockImplementation(async (input: { usePublicCatalog?: boolean }) =>
@@ -314,7 +329,7 @@ it("opens a sign-in preset with its address filled in and no token to paste", as
     );
   }
   await act(async () => root.render(<Harness />));
-  await act(async () => form?.start("mcp", preset));
+  await act(async () => form?.start("mcp", { kind: "mcp", preset }));
 
   // Name and address only: a token preset would add a third field for the token.
   expect([...host.querySelectorAll("input")].map((input) => input.value)).toEqual([
@@ -322,6 +337,61 @@ it("opens a sign-in preset with its address filled in and no token to paste", as
     "https://gateway.example.test/mcp",
   ]);
   expect(host.textContent).toContain("Save and sign in");
+});
+
+it("adds a first-party source by asking for its API key and nothing else", async () => {
+  api.capabilities.apiPresets.mockResolvedValue([
+    {
+      id: "core-distro-leads",
+      label: "Core Distro Leads",
+      source: "https://data.core-distro.com",
+      operations: [{ name: "core_distro_list_leads", description: "List the lead lists." }],
+    },
+  ]);
+  await act(async () =>
+    root.render(
+      <QueryClientProvider client={client}>
+        <PluginsOverlay onClose={() => {}} />
+      </QueryClientProvider>,
+    ),
+  );
+  await vi.waitFor(() => expect(api.capabilities.apiPresets).toHaveBeenCalled());
+
+  // The menu is rendered once the integrations list has loaded.
+  let entry: HTMLButtonElement | undefined;
+  await vi.waitFor(() => {
+    entry = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent === "Core Distro Leads",
+    );
+    expect(entry).toBeDefined();
+  });
+  await act(async () => entry?.click());
+
+  // One field, and it is the key: the preset fixes the name, the address and the reads.
+  await vi.waitFor(() =>
+    expect(host.querySelector('[data-testid="integrations-source-form"]')).not.toBeNull(),
+  );
+  const inputs = host.querySelectorAll<HTMLInputElement>(
+    '[data-testid="integrations-source-form"] input',
+  );
+  expect(inputs).toHaveLength(1);
+  expect(host.textContent).toContain("API key");
+  expect(host.textContent).toContain("Credentials are encrypted");
+
+  await type(inputs[0]!, "a-key-the-operator-typed");
+  const submit = Array.from(host.querySelectorAll("button")).find(
+    (button) => button.textContent === "Verify and add",
+  );
+  await act(async () => submit?.click());
+
+  await vi.waitFor(() =>
+    expect(api.capabilities.installApiPreset).toHaveBeenCalledWith({
+      presetId: "core-distro-leads",
+      credential: "a-key-the-operator-typed",
+    }),
+  );
+  // The operations are the server's business, so the client never sends them.
+  expect(api.capabilities.install).not.toHaveBeenCalled();
 });
 
 it("leads from an app that is also a chat app here to messaging, and says nothing for other apps", async () => {

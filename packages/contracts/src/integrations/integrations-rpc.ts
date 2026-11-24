@@ -3,6 +3,7 @@ import * as z from "zod";
 import { Id } from "../ids.js";
 import { botId } from "../rpc/inputs.js";
 import { settingsScopeInput } from "../settings-scope.js";
+import { ApiConnectorPresetSchema } from "./api-connector-presets.js";
 import {
   ActionApprovalRuleSchema,
   ActionAutoReviewSettingsSchema,
@@ -68,6 +69,17 @@ export const integrationsRpc = {
   capabilities: {
     list: oc.output(z.array(CapabilityInstallSchema)),
     sourcePresets: oc.output(z.array(McpSourcePresetSchema)),
+    /** The first-party API sources an operator can add without typing the operations. */
+    apiPresets: oc.output(z.array(ApiConnectorPresetSchema)),
+    /** Add one of those sources. The credential goes to the encrypted credential field. */
+    installApiPreset: oc
+      .input(
+        z.object({
+          presetId: z.string().min(1).max(120),
+          credential: z.string().min(1).max(16_384),
+        }),
+      )
+      .output(CapabilityInstallSchema),
     catalogSearch: oc
       .input(
         z.object({

@@ -1,13 +1,19 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import { deadlineSignal, parseRetryAfter } from "@rakazo/core";
+import { bestEffort } from "@rakazo/logging";
 import { z } from "zod";
 import { readBoundedText } from "../../../integrations/connector-http.js";
 import {
   redactConnectorPayload,
   sanitizeConnectorError,
 } from "../../../integrations/connector-safety.js";
+import type { RemoteConnectorDependencies } from "../../../integrations/installed-connectors.js";
 import type { McpToolDefinition } from "../../../mcp/mcp-tool-server.js";
 import { createMcpToolServer, mcpTextResult } from "../../../mcp/mcp-tool-server.js";
+import type { RemoteUrlPolicy } from "../../../mcp/remote-mcp.js";
+import { createSafeRemoteFetch } from "../../../mcp/remote-mcp.js";
 
 /**
  * Core Distro's own lead API, wrapped as MCP tools.
@@ -378,4 +384,67 @@ export function createCoreDistroApiLeadsMcpServer(context: CoreDistroApiLeadsCon
     tools: coreDistroApiLeadsTools(context),
     secrets: [context.credential],
   });
+}
+
+/** What a credential check found. The reason never carries the credential. */
+export type CoreDistroApiLeadsCredentialCheck = { ok: true } | { ok: false; reason: string };
+
+/** The sentence a person reads when the source refused a key. */
+function credentialRefusalReason(payload: string, credential: string): string {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const error = (parsed as { error?: unknown }).error;
+      if (typeof error === "string" && error.trim()) {
+        return redactConnectorPayload(error, [credential]) as string;
+      }
+    }
+  } catch {
+    /* A body that is not JSON is reported as the source's own text below. */
+  }
+  return redactConnectorPayload(payload.slice(0, 500), [credential]) as string;
+}
+
+/**
+ * Ask the source whether a key works, before an install keeps it.
+ *
+ * The check runs through the same MCP server an agent calls, so what passes here
+ * is the tool contract itself and not a second, weaker copy of it. The key is
+ * bound into the server for the length of the call and travels in one header;
+ * it never reaches a URL, an argument, a result or the reason this returns.
+ */
+export async function verifyCoreDistroApiLeadsCredential(
+  credential: string,
+  options: {
+    signal?: AbortSignal;
+    /** How the call reaches the source: the deployment's fetch and address policy. */
+    remote?: RemoteConnectorDependencies & RemoteUrlPolicy;
+    baseUrl?: string;
+  } = {},
+): Promise<CoreDistroApiLeadsCredentialCheck> {
+  // The check is a remote call like any other, so it answers to the same address policy.
+  const remote = options.remote;
+  const server = createCoreDistroApiLeadsMcpServer({
+    credential,
+    fetch: remote ? createSafeRemoteFetch(remote.fetch, remote.resolveHostname, remote) : undefined,
+    signal: options.signal,
+    baseUrl: options.baseUrl,
+  });
+  const client = new Client({ name: "core-distro-credential-check", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = (await client.callTool({
+      name: "core_distro_list_leads",
+      arguments: { action: "getLists" },
+    })) as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
+    if (!result.isError) return { ok: true };
+    const text = result.content?.find((entry) => entry.type === "text")?.text ?? "";
+    return { ok: false, reason: credentialRefusalReason(text, credential) };
+  } catch (error) {
+    return { ok: false, reason: sanitizeConnectorError(error, [credential]) };
+  } finally {
+    await bestEffort("close the credential check client", client.close());
+    await bestEffort("close the credential check server", server.close());
+  }
 }

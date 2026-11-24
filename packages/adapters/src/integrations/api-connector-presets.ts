@@ -1,5 +1,10 @@
 import { ConnectionSetupError } from "@rakazo/contracts";
-import type { ApiConfig } from "./installed-connectors.js";
+import type { RemoteUrlPolicy } from "../mcp/remote-mcp.js";
+import { verifyCoreDistroApiLeadsCredential } from "../providers/leads/core-distro/core-distro-api-leads.js";
+import type { ApiConfig, RemoteConnectorDependencies } from "./installed-connectors.js";
+
+/** What a credential check found: the source accepted it, or it did not and said why. */
+export type ApiConnectorPresetCheck = { ok: true } | { ok: false; reason: string };
 
 /**
  * A first-party connector preset: the reviewed description of one installed
@@ -23,7 +28,23 @@ export type ApiConnectorPreset = {
   source: string;
   /** The operations and the auth the install stores. Never a credential. */
   config: ApiConfig;
+  /**
+   * Asks the source whether a credential works, so an install never keeps a key
+   * the service refuses. The check holds the credential only for the call, and
+   * the reason it returns never carries it.
+   */
+  verify?: (
+    credential: string,
+    options?: {
+      signal?: AbortSignal;
+      /** How the check reaches the source: the deployment's fetch and address policy. */
+      remote?: RemoteConnectorDependencies & RemoteUrlPolicy;
+    },
+  ) => Promise<ApiConnectorPresetCheck>;
 };
+
+/** Where the source below answers. */
+const CORE_DISTRO_LEADS_SOURCE = "https://data.core-distro.com";
 
 /**
  * Core Distro's own lead API.
@@ -42,7 +63,14 @@ export type ApiConnectorPreset = {
 export const CORE_DISTRO_LEADS_PRESET: ApiConnectorPreset = {
   id: "core-distro-leads",
   label: "Core Distro Leads",
-  source: "https://data.core-distro.com",
+  source: CORE_DISTRO_LEADS_SOURCE,
+  // The check asks the source itself, through the same tools an agent calls, so
+  // a key that cannot read is refused before an install keeps it.
+  verify: (credential, options) =>
+    verifyCoreDistroApiLeadsCredential(credential, {
+      ...options,
+      baseUrl: CORE_DISTRO_LEADS_SOURCE,
+    }),
   config: {
     auth: { type: "bearer" },
     headers: {},

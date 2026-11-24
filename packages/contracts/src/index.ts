@@ -41,6 +41,7 @@ export * from "./experiments.js";
 export * from "./ids.js";
 export * from "./integrations/agent-import.js";
 export * from "./integrations/agent-import-setup.js";
+export * from "./integrations/api-connector-presets.js";
 export * from "./integrations/approvals.js";
 export * from "./integrations/connection-setup-error.js";
 export * from "./integrations/connections.js";

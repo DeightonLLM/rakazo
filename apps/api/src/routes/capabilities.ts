@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import {
+  API_CONNECTOR_PRESETS,
+  apiConnectorPreset,
+  apiConnectorPresetInstall,
   applyMcpSourcePreset,
   createPluginMarketplace,
   isTransientFetchError,
@@ -71,6 +74,103 @@ export function capabilitiesRoutes(ctx: RouterContext) {
     });
     for (const event of notify) await deps.events.notify(event.threadId, event.seq);
   };
+  /**
+   * Installs an API tool source: the operations are checked, the credential is
+   * encrypted on the way in, and the stored config never carries it.
+   *
+   * Both ways of adding one come here — a source typed by hand and a first-party
+   * preset — so the two cannot drift apart on how a credential is handled.
+   */
+  const installApiCapability = async (
+    actor: Actor,
+    input: {
+      name: string;
+      source: string;
+      config: Record<string, unknown>;
+      credential?: string;
+      /** Which operation asked for the credential, for the secret store's own record. */
+      operationId: string;
+    },
+    signal: AbortSignal | undefined,
+  ) => {
+    let source = input.source.trim();
+    let config = input.config;
+    const credential = input.credential?.trim() || undefined;
+    if (
+      credential &&
+      credential.length >= 8 &&
+      (source.includes(credential) || containsSecret(config, [credential]))
+    ) {
+      throw new ORPCError("BAD_REQUEST", {
+        message: "Put credentials only in the encrypted credential field",
+      });
+    }
+    if (JSON.stringify(config).length > 2_000_000) {
+      throw new ORPCError("BAD_REQUEST", { message: "Capability configuration is too large" });
+    }
+    const prepared = await prepareApiInstall({
+      source,
+      config,
+      credential,
+      signal,
+      remote: deps.remoteConnectors,
+      allowPrivateEndpoint: mayUsePrivateEndpoint(deps),
+    });
+    source = prepared.source;
+    config = prepared.config;
+    const stored = credential
+      ? await deps.secrets.put(credential, {
+          operationId: input.operationId,
+          traceId: input.operationId,
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          signal: signal ?? new AbortController().signal,
+        })
+      : undefined;
+    const digest = `sha256:${createHash("sha256")
+      .update(JSON.stringify({ kind: "api", source, config }))
+      .digest("hex")}`;
+    const row = await deps.prisma.$transaction(async (tx) => {
+      if (stored) {
+        // A source the user adds reaches all their spaces, so its secret is the account's.
+        await tx.secret.create({
+          data: {
+            id: stored.id,
+            spaceId: null,
+            userId: actor.userId,
+            kind: "connector",
+            ciphertext: stored.ciphertext,
+          },
+        });
+      }
+      return tx.capabilityInstall.create({
+        data: {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          allSpaces: true,
+          kind: "api",
+          name: input.name.trim(),
+          source,
+          secretId: stored?.id,
+          config: config as Prisma.InputJsonValue,
+          digest,
+          version: "1.0.0",
+        },
+      });
+    });
+    return {
+      id: row.id,
+      kind: row.kind as "skill" | "plugin" | "mcp" | "api" | "connection",
+      name: row.name,
+      source: row.source,
+      version: row.version,
+      digest: row.digest,
+      secretConfigured: Boolean(row.secretId),
+      config: installConfig(row),
+      availability: spaceAvailability(row),
+      createdAt: row.createdAt.toISOString(),
+    };
+  };
   return {
     marketplace: {
       catalog: authed.marketplace.catalog.handler(async ({ input }) => {
@@ -117,6 +217,55 @@ export function capabilitiesRoutes(ctx: RouterContext) {
         }));
       }),
       sourcePresets: authed.capabilities.sourcePresets.handler(() => MCP_SOURCE_PRESETS),
+      /** The first-party API sources an operator can add without typing the operations. */
+      apiPresets: authed.capabilities.apiPresets.handler(() =>
+        API_CONNECTOR_PRESETS.map((preset) => ({
+          id: preset.id,
+          label: preset.label,
+          source: preset.source,
+          operations: preset.config.operations.map((operation) => ({
+            name: operation.name ?? operation.id,
+            description: operation.description ?? "",
+          })),
+        })),
+      ),
+      /** Adds one of those sources, with the credential it needs. */
+      installApiPreset: authed.capabilities.installApiPreset.handler(async ({ context, input }) => {
+        const preset = apiConnectorPreset(input.presetId);
+        if (!preset) {
+          throw new ClientError("NOT_FOUND", "That connector is not one this deployment offers.");
+        }
+        const credential = input.credential.trim();
+        if (!credential) {
+          throw new ClientError("BAD_REQUEST", "Enter the API key for this connector.");
+        }
+        // The source is asked whether the key works before it is kept, so an install never
+        // holds a credential the service refuses.
+        if (preset.verify) {
+          const check = await preset.verify(credential, {
+            signal: context.signal,
+            remote: {
+              ...deps.remoteConnectors,
+              allowPrivateEndpoint: mayUsePrivateEndpoint(deps),
+            },
+          });
+          if (!check.ok) {
+            throw new ClientError("BAD_REQUEST", check.reason);
+          }
+        }
+        const request = apiConnectorPresetInstall(preset.id, credential);
+        return installApiCapability(
+          context.actor,
+          {
+            name: request.name,
+            source: request.source,
+            config: request.config,
+            credential: request.credential,
+            operationId: "capabilities.installApiPreset",
+          },
+          context.signal,
+        );
+      }),
       catalogSearch: authed.capabilities.catalogSearch.handler(async ({ context, input }) => {
         const baseUrl =
           deps.env.integrationsCatalogUrl ??
@@ -144,6 +293,19 @@ export function capabilitiesRoutes(ctx: RouterContext) {
             context.signal,
           );
         }
+        if (input.kind === "api") {
+          return installApiCapability(
+            context.actor,
+            {
+              name: input.name,
+              source: input.source,
+              config: input.config,
+              credential: input.credential,
+              operationId: "capabilities.install",
+            },
+            context.signal,
+          );
+        }
         let source = input.source.trim();
         let config = input.config;
         const credential = input.credential?.trim() || undefined;
@@ -159,12 +321,8 @@ export function capabilitiesRoutes(ctx: RouterContext) {
         if (JSON.stringify(config).length > 2_000_000) {
           throw new ORPCError("BAD_REQUEST", { message: "Capability configuration is too large" });
         }
-        if (
-          credential &&
-          input.kind !== "mcp" &&
-          input.kind !== "api" &&
-          input.kind !== "graphql"
-        ) {
+        // An API source is installed above, so only MCP and GraphQL remain here.
+        if (credential && input.kind !== "mcp" && input.kind !== "graphql") {
           throw new ORPCError("BAD_REQUEST", {
             message: "Credentials are only accepted for MCP, API, and GraphQL tool sources",
           });
@@ -180,18 +338,6 @@ export function capabilitiesRoutes(ctx: RouterContext) {
             allowPrivateEndpoint: mayUsePrivateEndpoint(deps),
           });
           config = verified.config;
-        }
-        if (input.kind === "api") {
-          const prepared = await prepareApiInstall({
-            source,
-            config,
-            credential,
-            signal: context.signal,
-            remote: deps.remoteConnectors,
-            allowPrivateEndpoint: mayUsePrivateEndpoint(deps),
-          });
-          source = prepared.source;
-          config = prepared.config;
         }
         if (input.kind === "graphql") {
           const prepared = await prepareGraphqlInstall({

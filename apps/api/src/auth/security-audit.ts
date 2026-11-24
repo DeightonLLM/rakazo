@@ -27,6 +27,11 @@ export const AUDITED_PROCEDURES: Record<string, AuditedProcedure> = {
   "mcp.oauth.complete": { type: "credential.created", kind: "mcp_oauth" },
   "mcp.oauth.disconnect": { type: "credential.deleted", kind: "mcp_oauth", fields: ["serverId"] },
   "capabilities.install": { type: "credential.created", kind: "connector", fields: ["kind"] },
+  "capabilities.installApiPreset": {
+    type: "credential.created",
+    kind: "connector",
+    fields: ["presetId"],
+  },
   "capabilities.remove": { type: "credential.deleted", kind: "connector", fields: ["id"] },
   "connections.revoke": {
     type: "credential.deleted",

@@ -1,5 +1,6 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type {
+  ApiConnectorPreset,
   IntegrationCatalogResult,
   IntegrationCatalogSurface,
   McpSourcePreset,
@@ -13,12 +14,20 @@ export type SourceKind = "mcp" | "api" | "graphql";
 /** How a custom source authenticates. OAuth is a remote MCP server's browser sign-in. */
 export type SourceAuth = "none" | "bearer" | "header" | "oauth";
 
+/**
+ * The preset a form was opened from: an MCP server preset, or a first-party API
+ * source whose operations the server already knows.
+ */
+export type SourcePreset =
+  | { kind: "mcp"; preset: McpSourcePreset }
+  | { kind: "api"; preset: ApiConnectorPreset };
+
 export type SourceForm = ReturnType<typeof useSourceForm>;
 
 /** The fields of a custom MCP, OpenAPI, or GraphQL connector; each start fills them afresh. */
 export function useSourceForm() {
   const [sourceKind, setSourceKind] = useState<SourceKind | null>(null);
-  const [sourcePreset, setSourcePreset] = useState<McpSourcePreset | null>(null);
+  const [sourcePreset, setSourcePreset] = useState<SourcePreset | null>(null);
   const [sourceName, setSourceName] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [credential, setCredential] = useState("");
@@ -26,14 +35,20 @@ export function useSourceForm() {
   const [authName, setAuthName] = useState("x-api-key");
   const [sourceHint, setSourceHint] = useState<string | null>(null);
 
-  function start(kind: SourceKind, preset: McpSourcePreset | null) {
+  function start(kind: SourceKind, preset: SourcePreset | null) {
     setSourceKind(kind);
     setSourcePreset(preset);
     setSourceHint(null);
-    setSourceName(preset?.name ?? "");
-    setSourceUrl(preset?.url ?? preset?.defaultUrl ?? "");
+    setSourceName(preset?.kind === "mcp" ? preset.preset.name : (preset?.preset.label ?? ""));
+    setSourceUrl(
+      preset?.kind === "mcp"
+        ? (preset.preset.url ?? preset.preset.defaultUrl ?? "")
+        : (preset?.preset.source ?? ""),
+    );
     setCredential("");
-    setAuthType(preset?.signIn ? "oauth" : preset ? "bearer" : "none");
+    setAuthType(
+      preset?.kind === "mcp" && preset.preset.signIn ? "oauth" : preset ? "bearer" : "none",
+    );
     setAuthName("x-api-key");
   }
 
@@ -110,6 +125,8 @@ export function SourceFormView({
   } = form;
   if (!sourceKind) return null;
   const custom = !sourcePreset;
+  const mcpPreset = sourcePreset?.kind === "mcp" ? sourcePreset.preset : null;
+  const apiPreset = sourcePreset?.kind === "api" ? sourcePreset.preset : null;
   // OAuth saves the server before the browser sign-in, so it is not a check of typed credentials.
   const oauth = authType === "oauth";
   const submitLabel = installing ? (
@@ -127,8 +144,10 @@ export function SourceFormView({
     <div data-testid="integrations-source-form" className="max-w-xl space-y-6">
       <ViewTitle
         title={
-          sourcePreset ? (
-            sourcePreset.name
+          apiPreset ? (
+            apiPreset.label
+          ) : mcpPreset ? (
+            mcpPreset.name
           ) : sourceKind === "mcp" ? (
             <Trans>MCP server</Trans>
           ) : sourceKind === "graphql" ? (
@@ -146,18 +165,20 @@ export function SourceFormView({
           onSubmit();
         }}
       >
-        <Field>
-          <FieldLabel htmlFor="source-name">
-            <Trans>Name</Trans>
-          </FieldLabel>
-          <Input
-            id="source-name"
-            value={sourceName}
-            onChange={(event) => setSourceName(event.target.value)}
-            autoFocus
-          />
-        </Field>
-        {!sourcePreset?.url ? (
+        {apiPreset ? null : (
+          <Field>
+            <FieldLabel htmlFor="source-name">
+              <Trans>Name</Trans>
+            </FieldLabel>
+            <Input
+              id="source-name"
+              value={sourceName}
+              onChange={(event) => setSourceName(event.target.value)}
+              autoFocus
+            />
+          </Field>
+        )}
+        {!mcpPreset?.url && !apiPreset ? (
           <Field>
             <FieldLabel htmlFor="source-url">URL</FieldLabel>
             <Input
@@ -165,7 +186,7 @@ export function SourceFormView({
               value={sourceUrl}
               onChange={(event) => setSourceUrl(event.target.value)}
               placeholder={
-                sourcePreset?.urlPlaceholder ??
+                mcpPreset?.urlPlaceholder ??
                 (sourceKind === "mcp"
                   ? "https://example.com/mcp"
                   : sourceKind === "graphql"
@@ -208,7 +229,13 @@ export function SourceFormView({
         {(!custom || authType !== "none") && authType !== "oauth" ? (
           <Field>
             <FieldLabel htmlFor="source-credential">
-              {sourcePreset ? <Trans>Bearer token</Trans> : <Trans>Credential</Trans>}
+              {apiPreset ? (
+                <Trans>API key</Trans>
+              ) : mcpPreset ? (
+                <Trans>Bearer token</Trans>
+              ) : (
+                <Trans>Credential</Trans>
+              )}
             </FieldLabel>
             <Input
               id="source-credential"
@@ -216,6 +243,7 @@ export function SourceFormView({
               autoComplete="new-password"
               value={credential}
               onChange={(event) => setCredential(event.target.value)}
+              autoFocus={apiPreset ? true : undefined}
             />
             <FieldDescription>
               <Trans>Credentials are encrypted and never sent to the model.</Trans>

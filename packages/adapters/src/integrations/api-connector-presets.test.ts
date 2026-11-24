@@ -318,6 +318,20 @@ describe("Core Distro connector preset", () => {
     });
   });
 
+  it("checks a credential against the source before an install keeps it", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ success: false, error: "Invalid API key" }, { status: 401 }),
+      );
+    const check = await CORE_DISTRO_LEADS_PRESET.verify?.(CREDENTIAL, {
+      remote: { fetch: fetch as never },
+    });
+
+    expect(check?.ok).toBe(false);
+    expect(JSON.stringify(check)).not.toContain(CREDENTIAL);
+  });
+
   it("keeps the operation ids, methods and paths stable", () => {
     expect(
       CORE_DISTRO_LEADS_PRESET.config.operations.map((operation) => [

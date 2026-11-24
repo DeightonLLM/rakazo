@@ -4,7 +4,6 @@ import type {
   ConnectionCatalogItem,
   IntegrationCatalogResult,
   IntegrationCatalogSurface,
-  McpSourcePreset,
 } from "@rakazo/contracts";
 import { MCP_OAUTH_CLIENT_REQUIRED, mcpServerConnection } from "@rakazo/contracts";
 import type { connectedAppMarks } from "@rakazo/core";
@@ -49,7 +48,7 @@ import { ManageView } from "./manage-view";
 import type { TileContext } from "./parts";
 import { ViewTitle } from "./parts";
 import { PluginBrowse } from "./plugin-browse";
-import type { SourceKind } from "./source-form";
+import type { SourceKind, SourcePreset } from "./source-form";
 import { SourceFormView, useSourceForm } from "./source-form";
 import { PLUGIN_PAGE_SIZE, useCatalogBrowse } from "./use-catalog-browse";
 import { usePluginConnections } from "./use-plugin-connections";
@@ -98,6 +97,7 @@ export function PluginsOverlay({
   const {
     mcpServers,
     sourcePresets,
+    apiPresets,
     integrations,
     catalogLoaded,
     loading,
@@ -238,7 +238,7 @@ export function PluginsOverlay({
     onOpenChatApp: onOpenMessaging,
   };
 
-  function beginSource(kind: SourceKind, preset: McpSourcePreset | null = null) {
+  function beginSource(kind: SourceKind, preset: SourcePreset | null = null) {
     setPlugin(null);
     setDetailKey(null);
     setSourceBack("browse");
@@ -268,9 +268,15 @@ export function PluginsOverlay({
     const { sourceKind, sourcePreset, sourceName, sourceUrl, credential, authType, authName } =
       sourceForm;
     if (!sourceKind) return;
+    const apiPreset = sourcePreset?.kind === "api" ? sourcePreset.preset : null;
     const name =
       sourceName.trim() ||
-      (sourcePreset?.name ?? (sourceKind === "graphql" ? "GraphQL" : "Custom connector"));
+      (apiPreset?.label ??
+        (sourcePreset?.kind === "mcp"
+          ? sourcePreset.preset.name
+          : sourceKind === "graphql"
+            ? "GraphQL"
+            : "Custom connector"));
     setSourceError(null);
     setOauthError(null);
     sourceAction.current += 1;
@@ -278,6 +284,19 @@ export function PluginsOverlay({
     const action = sourceAction.current;
     let savedForOauth = false;
     try {
+      // A first-party source is added by its id: the server knows its operations, and
+      // the key goes straight to the encrypted credential field.
+      if (apiPreset) {
+        await rpc.capabilities.installApiPreset({
+          presetId: apiPreset.id,
+          credential: credential.trim(),
+        });
+        sourceForm.setCredential("");
+        sourceForm.setSourceKind(null);
+        setView("manage");
+        await refresh();
+        return;
+      }
       // OAuth is the MCP server itself signing in, so it is saved first and then authorized.
       if (sourceKind === "mcp" && authType === "oauth") {
         const server = await rpc.mcp.servers.create(customMcpServerInput(name, sourceUrl));
@@ -312,13 +331,14 @@ export function PluginsOverlay({
         name,
         source: sourceUrl.trim(),
         credential: credential.trim() || undefined,
-        config: sourcePreset
-          ? { preset: sourcePreset.id }
-          : sourceKind === "api"
-            ? { openApi: true, auth }
-            : sourceKind === "graphql"
-              ? { auth }
-              : { preset: "custom", auth },
+        config:
+          sourcePreset?.kind === "mcp"
+            ? { preset: sourcePreset.preset.id }
+            : sourceKind === "api"
+              ? { openApi: true, auth }
+              : sourceKind === "graphql"
+                ? { auth }
+                : { preset: "custom", auth },
       });
       sourceForm.setCredential("");
       sourceForm.setSourceKind(null);
@@ -440,6 +460,7 @@ export function PluginsOverlay({
             {browsing || view === "manage" ? (
               <AddMenu
                 presets={sourcePresets}
+                apiPresets={apiPresets}
                 onGithub={() => openAddView("github")}
                 onSource={beginSource}
                 onBrowseMcp={() => {

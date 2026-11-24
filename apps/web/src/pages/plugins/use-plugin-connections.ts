@@ -1,5 +1,6 @@
 import { useLingui } from "@lingui/react/macro";
 import type {
+  ApiConnectorPreset,
   CapabilityInstall,
   Connection,
   ConnectionCatalogItem,
@@ -24,6 +25,7 @@ const NO_CATALOG: ConnectionCatalogItem[] = [];
 const NO_CONNECTIONS: Connection[] = [];
 const NO_SOURCES: CapabilityInstall[] = [];
 const NO_PRESETS: McpSourcePreset[] = [];
+const NO_API_PRESETS: ApiConnectorPreset[] = [];
 
 function markConnected(
   items: ConnectionCatalogItem[],
@@ -67,6 +69,8 @@ export function usePluginConnections({
   const mcpServers = mcpQuery.data ?? [];
   const sourcePresets =
     useQuery(queries.capabilities.sourcePresets.queryOptions()).data ?? NO_PRESETS;
+  const apiPresets =
+    useQuery(queries.capabilities.apiPresets.queryOptions()).data ?? NO_API_PRESETS;
   const mcpError = mcpQuery.error ? errorText(mcpQuery.error, t`Could not load MCP servers`) : null;
   async function loadIntegrations() {
     // The catalog call reconciles connection rows, so list them after it settles.
@@ -302,6 +306,7 @@ export function usePluginConnections({
     mcpQuery,
     mcpServers,
     sourcePresets,
+    apiPresets,
     mcpError,
     integrations,
     catalogLoaded,

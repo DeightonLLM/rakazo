@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { McpSourcePreset } from "@rakazo/contracts";
+import type { ApiConnectorPreset, McpSourcePreset } from "@rakazo/contracts";
 import {
   Button,
   DropdownMenu,
@@ -9,11 +9,12 @@ import {
   DropdownMenuTrigger,
 } from "@rakazo/ui-web";
 import { Plus } from "lucide-react";
-import type { SourceKind } from "./source-form";
+import type { SourceKind, SourcePreset } from "./source-form";
 
 /** The + menu: a plugin from GitHub, a custom connector, or the MCP and domain catalogs. */
 export function AddMenu({
   presets,
+  apiPresets,
   onGithub,
   onSource,
   onBrowseMcp,
@@ -21,8 +22,10 @@ export function AddMenu({
   onOpenMcp,
 }: {
   presets: McpSourcePreset[];
+  /** The first-party API sources the server offers, ready to add. */
+  apiPresets: ApiConnectorPreset[];
   onGithub: () => void;
-  onSource: (kind: SourceKind, preset?: McpSourcePreset) => void;
+  onSource: (kind: SourceKind, preset?: SourcePreset) => void;
   onBrowseMcp: () => void;
   /** Only where the deployment offers the domain catalog. */
   onDomainSearch?: () => void;
@@ -47,8 +50,19 @@ export function AddMenu({
         <DropdownMenuItem onClick={() => onSource("api")}>OpenAPI</DropdownMenuItem>
         <DropdownMenuItem onClick={() => onSource("graphql")}>GraphQL</DropdownMenuItem>
         {presets.map((preset) => (
-          <DropdownMenuItem key={preset.id} onClick={() => onSource("mcp", preset)}>
+          <DropdownMenuItem
+            key={preset.id}
+            onClick={() => onSource("mcp", { kind: "mcp", preset })}
+          >
             {preset.name}
+          </DropdownMenuItem>
+        ))}
+        {apiPresets.map((preset) => (
+          <DropdownMenuItem
+            key={preset.id}
+            onClick={() => onSource("api", { kind: "api", preset })}
+          >
+            {preset.label}
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
